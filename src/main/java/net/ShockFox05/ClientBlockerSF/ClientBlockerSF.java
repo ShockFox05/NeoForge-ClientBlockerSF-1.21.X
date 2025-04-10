@@ -13,9 +13,12 @@ import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.config.ModConfig;
+import net.neoforged.fml.event.config.ModConfigEvent;
 import net.neoforged.fml.loading.FMLEnvironment;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
+import net.ShockFox05.ClientBlockerSF.stub.StubClassRegistry;
+import net.ShockFox05.ClientBlockerSF.stub.StubClassTransformerHook;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -46,13 +49,27 @@ public class ClientBlockerSF {
         NeoForge.EVENT_BUS.addListener(CommandRegistrationHandler::registerCommands);
     }
 
-    public ClientBlockerSF(IEventBus modEventBus, ModContainer modContainer) {
-        modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
-        // Register instance-based events.
+    public ClientBlockerSF(IEventBus modEventBus) {
+        // Register config
+        modEventBus.register(Config.class);
+        modEventBus.addListener(this::onConfigLoad);
+
+        // Register server event listeners
         NeoForge.EVENT_BUS.register(this);
+
+        // Initialize stub class transformer early
+        if (FMLEnvironment.dist.isDedicatedServer()) {
+            StubClassTransformerHook.init();
+        }
 
         // Invoke client-specific setup (this call is a no-op on a dedicated server).
         CLIENT_FEATURE.performClientSetup();
+    }
+
+    private void onConfigLoad(final ModConfigEvent.Loading event) {
+        if (event.getConfig().getModId().equals(MOD_ID)) {
+            LOGGER.info("[ClientBlockerSF] Config loaded");
+        }
     }
 
     @SubscribeEvent
@@ -63,19 +80,23 @@ public class ClientBlockerSF {
             String[] clientOnlyClasses = {
                     "net.minecraft.client.Minecraft",
                     "net.minecraft.client.gui.screens.Screen",
-                    "com.mojang.blaze3d.systems.RenderSystem"
+                    "com.mojang.blaze3d.systems.RenderSystem",
+                    "net.minecraft.client.KeyMapping",
+                    "com.mojang.blaze3d.vertex.BufferBuilder"
             };
 
             ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
             for (String className : clientOnlyClasses) {
                 String resourceName = className.replace('.', '/') + ".class";
                 if (classLoader.getResource(resourceName) != null) {
-                    LOGGER.warn("[ClientBlockerSF] WARNING: Client-only class '" + className + "' is present on server. Disabling client features.");
-                    // Optionally, add additional fallback or disabling logic here.
+                    LOGGER.warn("[ClientBlockerSF] WARNING: Client-only class '" + className + "' is present on server. Stub implementation will be provided.");
                 } else {
                     LOGGER.info("[ClientBlockerSF] Verified: " + className + " is not present on server (as expected).");
                 }
             }
+
+            // Add a command to list all registered stub classes
+            LOGGER.info("[ClientBlockerSF] Stub class system is active. Client-side classes will be stubbed to prevent crashes.");
         }
     }
 
@@ -131,7 +152,7 @@ public class ClientBlockerSF {
                             )
             );
 
-            // New command to check the client feature status.
+            // Command to check the client feature status.
             dispatcher.register(
                     Commands.literal("clientstatus")
                             .requires(source -> true)
@@ -146,6 +167,26 @@ public class ClientBlockerSF {
                                     status = "Unknown client feature status.";
                                 }
                                 source.sendSuccess(() -> Component.literal(status), false);
+                                return 1;
+                            })
+            );
+
+            // Command to list all registered stub classes
+            dispatcher.register(
+                    Commands.literal("liststubs")
+                            .requires(source -> true)
+                            .executes(context -> {
+                                CommandSourceStack source = context.getSource();
+                                List<String> stubs = StubClassRegistry.getLoadedStubs();
+
+                                if (stubs.isEmpty()) {
+                                    source.sendSuccess(() -> Component.literal("No stub classes have been loaded yet."), false);
+                                } else {
+                                    source.sendSuccess(() -> Component.literal("Loaded stub classes ("+stubs.size()+"):"), false);
+                                    for (String stub : stubs) {
+                                        source.sendSuccess(() -> Component.literal(" - " + stub), false);
+                                    }
+                                }
                                 return 1;
                             })
             );

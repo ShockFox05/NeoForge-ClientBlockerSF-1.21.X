@@ -1,6 +1,11 @@
 package net.ShockFox05.ClientBlockerSF;
 
 import com.mojang.brigadier.CommandDispatcher;
+import net.ShockFox05.ClientBlockerSF.compat.CompatRegistry;
+import net.ShockFox05.ClientBlockerSF.compat.ExceptionHandler;
+import net.ShockFox05.ClientBlockerSF.compat.ModInitHandler;
+import net.ShockFox05.ClientBlockerSF.stub.StubClassMapping;
+import net.ShockFox05.ClientBlockerSF.test.TestClientBlocker;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
@@ -28,6 +33,7 @@ import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 @Mod(ClientBlockerSF.MOD_ID)
 public class ClientBlockerSF {
@@ -50,6 +56,8 @@ public class ClientBlockerSF {
     }
 
     public ClientBlockerSF(IEventBus modEventBus) {
+        LOGGER.info("[{}] Initializing...", MOD_ID);
+
         // Register config
         modEventBus.register(Config.class);
         modEventBus.addListener(this::onConfigLoad);
@@ -57,13 +65,22 @@ public class ClientBlockerSF {
         // Register server event listeners
         NeoForge.EVENT_BUS.register(this);
 
+        // Create and register mod initialization handler
+        ModInitHandler initHandler = new ModInitHandler();
+        modEventBus.register(initHandler);
+
         // Initialize stub class transformer early
         if (FMLEnvironment.dist.isDedicatedServer()) {
-            StubClassTransformerHook.init();
+            ExceptionHandler.execute(() -> StubClassTransformerHook.init(), "initializing stub class transformer hook");
+
+            // Initialize compatibility registry
+            ExceptionHandler.execute(() -> CompatRegistry.init(), "initializing compatibility registry");
         }
 
         // Invoke client-specific setup (this call is a no-op on a dedicated server).
         CLIENT_FEATURE.performClientSetup();
+
+        LOGGER.info("[{}] Initialized successfully!", MOD_ID);
     }
 
     private void onConfigLoad(final ModConfigEvent.Loading event) {
@@ -75,28 +92,49 @@ public class ClientBlockerSF {
     @SubscribeEvent
     public void onServerStarting(ServerStartingEvent event) {
         if (FMLEnvironment.dist.isDedicatedServer()) {
-            LOGGER.info("[ClientBlockerSF] Running on dedicated server. Scanning for client-only classes...");
+            LOGGER.info("[{}] Running on dedicated server. Scanning for client-only classes...", MOD_ID);
 
-            String[] clientOnlyClasses = {
+            // Get client-only classes from our mapping
+            Set<String> clientOnlyClasses = StubClassMapping.getAllMappedClasses();
+            List<String> sampleClasses = List.of(
                     "net.minecraft.client.Minecraft",
                     "net.minecraft.client.gui.screens.Screen",
-                    "com.mojang.blaze3d.systems.RenderSystem",
+                    "com.mojang.blaze3d.vertex.RenderSystem",
                     "net.minecraft.client.KeyMapping",
                     "com.mojang.blaze3d.vertex.BufferBuilder"
-            };
+            );
 
             ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
-            for (String className : clientOnlyClasses) {
-                String resourceName = className.replace('.', '/') + ".class";
-                if (classLoader.getResource(resourceName) != null) {
-                    LOGGER.warn("[ClientBlockerSF] WARNING: Client-only class '" + className + "' is present on server. Stub implementation will be provided.");
-                } else {
-                    LOGGER.info("[ClientBlockerSF] Verified: " + className + " is not present on server (as expected).");
-                }
+            for (String className : sampleClasses) {
+                ExceptionHandler.execute(() -> {
+                    String resourceName = className.replace('.', '/') + ".class";
+                    if (classLoader.getResource(resourceName) != null) {
+                        LOGGER.warn("[{}] WARNING: Client-only class '{}' is present on server. Stub implementation will be provided.",
+                                MOD_ID, className);
+                    } else {
+                        LOGGER.info("[{}] Verified: {} is not present on server (as expected).",
+                                MOD_ID, className);
+                    }
+                }, "checking for client class " + className);
             }
 
-            // Add a command to list all registered stub classes
-            LOGGER.info("[ClientBlockerSF] Stub class system is active. Client-side classes will be stubbed to prevent crashes.");
+            // Log stub class statistics
+            LOGGER.info("[{}] Stub class system is active with {} mapped client classes.",
+                    MOD_ID, clientOnlyClasses.size());
+            LOGGER.info("[{}] Currently loaded {} stub classes, {} failed.",
+                    MOD_ID, StubClassRegistry.getLoadedStubCount(), StubClassRegistry.getFailedStubCount());
+
+            // Apply compatibility fixes for known problematic mods
+            LOGGER.info("[{}] Applying compatibility fixes for known problematic mods...", MOD_ID);
+            ExceptionHandler.execute(() -> {
+                CompatRegistry.applyFixes("create");
+                CompatRegistry.applyFixes("kubejs");
+                CompatRegistry.applyFixes("apotheosis");
+                CompatRegistry.applyFixes("ars_nouveau");
+            }, "applying compatibility fixes");
+
+            // Run test to verify stub class system
+            TestClientBlocker.runTest();
         }
     }
 
